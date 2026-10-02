@@ -1,258 +1,116 @@
-"""
-Step 2: Recipe Modification
+"""Apply exact recipe edits transactionally; never guess an intended match."""
 
-This module applies structured modifications to recipes using search-and-replace operations.
-It takes ModificationObject instances and applies their edits to recipe ingredients and instructions.
-"""
-
-import copy
-from difflib import SequenceMatcher
 from typing import List, Optional, Tuple
 
-from loguru import logger
-
-from .models import (
-    ModificationObject,
-    ModificationEdit,
-    Recipe,
-    ChangeRecord
-)
+from .models import ChangeRecord, ModificationEdit, ModificationObject, Recipe
 
 
 class RecipeModifier:
-    """Applies structured modifications to recipes using search-and-replace operations."""
+    """Apply textual edits, without claiming to validate cooking outcomes."""
 
     def __init__(self, similarity_threshold: float = 0.6):
-        """
-        Initialize the RecipeModifier.
-
-        Args:
-            similarity_threshold: Minimum similarity score for fuzzy matching (0-1)
-        """
+        # Retained for callers using the old constructor; matching is always exact.
         self.similarity_threshold = similarity_threshold
-        logger.info(f"Initialized RecipeModifier with similarity threshold: {similarity_threshold}")
+
+    def _match_index(self, target: str, candidates: List[str], *, full_line: bool = False) -> int:
+        if not target:
+            raise ValueError("An edit requires nonempty find text")
+        occurrences = [
+            index
+            for index, candidate in enumerate(candidates)
+            for _ in range(
+                int(candidate == target) if full_line else
+                sum(candidate.startswith(target, offset) for offset in range(len(candidate)))
+            )
+        ]
+        if len(occurrences) != 1:
+            raise ValueError(f"Expected one exact match for {target!r}; found {len(occurrences)}")
+        return occurrences[0]
 
     def find_best_match(self, target: str, candidates: List[str]) -> Tuple[Optional[str], Optional[int], float]:
-        """
-        Find the best matching string in a list of candidates.
-
-        Args:
-            target: String to find
-            candidates: List of strings to search in
-
-        Returns:
-            Tuple of (best_match, index, similarity_score)
-        """
-        if not candidates:
+        """Compatibility helper: return only a unique exact substring match."""
+        try:
+            index = self._match_index(target, candidates)
+        except ValueError:
             return None, None, 0.0
+        return candidates[index], index, 1.0
 
-        best_match = None
-        best_index = None
-        best_score = 0.0
-
-        for i, candidate in enumerate(candidates):
-            similarity = SequenceMatcher(None, target.lower(), candidate.lower()).ratio()
-            if similarity > best_score:
-                best_score = similarity
-                best_match = candidate
-                best_index = i
-
-        if best_score >= self.similarity_threshold:
-            return best_match, best_index, best_score
-        else:
-            return None, None, best_score
-
-    def apply_edit(
-        self,
-        edit: ModificationEdit,
-        recipe_content: List[str]
-    ) -> Tuple[List[str], List[ChangeRecord]]:
-        """
-        Apply a single edit to a recipe content list.
-
-        Args:
-            edit: The edit operation to apply
-            recipe_content: List of ingredients or instructions
-
-        Returns:
-            Tuple of (modified_content, change_records)
-        """
-        modified_content = copy.deepcopy(recipe_content)
-        change_records = []
-
-        logger.debug(f"Applying {edit.operation} edit: find='{edit.find}'")
-
+    def apply_edit(self, edit: ModificationEdit, recipe_content: List[str]) -> Tuple[List[str], List[ChangeRecord]]:
+        if edit.operation == "replace" and edit.add is not None:
+            raise ValueError("Replace requires add=null; use replace for replacement text")
+        if edit.operation == "add_after" and edit.replace is not None:
+            raise ValueError("Addition requires replace=null; use add for inserted text")
+        if edit.operation == "remove" and (edit.add is not None or edit.replace is not None):
+            raise ValueError("Remove requires add=null and replace=null")
+        content = list(recipe_content)
+        kind = "ingredient" if edit.target == "ingredients" else "instruction"
         if edit.operation == "replace":
-            # Find and replace text
-            match, index, score = self.find_best_match(edit.find, modified_content)
-
-            if match and index is not None:
-                original_text = modified_content[index]
-                new_text = original_text.replace(edit.find, edit.replace or "")
-                modified_content[index] = new_text
-
-                change_records.append(ChangeRecord(
-                    type="ingredient" if edit.target == "ingredients" else "instruction",
-                    from_text=original_text,
-                    to_text=new_text,
-                    operation="replace"
-                ))
-
-                logger.info(f"Replaced '{edit.find}' with '{edit.replace}' (similarity: {score:.2f})")
-            else:
-                logger.warning(f"Could not find '{edit.find}' in {edit.target} (best similarity: {score:.2f})")
-
+            if edit.replace is None or not edit.replace.strip():
+                raise ValueError("Replace requires nonempty replacement text")
+            index = self._match_index(edit.find, content)
+            original = content[index]
+            replacement = original.replace(edit.find, edit.replace, 1)
+            if replacement == original:
+                raise ValueError("Replacement makes no change")
+            content[index] = replacement
+            record = ChangeRecord(type=kind, operation="replace", from_text=original,
+                                  to_text=replacement, before_index=index, after_index=index)
         elif edit.operation == "add_after":
-            # Add new content after finding target
-            match, index, score = self.find_best_match(edit.find, modified_content)
-
-            if match and index is not None and edit.add:
-                modified_content.insert(index + 1, edit.add)
-
-                change_records.append(ChangeRecord(
-                    type="ingredient" if edit.target == "ingredients" else "instruction",
-                    from_text="",
-                    to_text=edit.add,
-                    operation="add"
-                ))
-
-                logger.info(f"Added '{edit.add}' after '{edit.find}' (similarity: {score:.2f})")
-            else:
-                logger.warning(f"Could not find target '{edit.find}' for addition")
-
+            if edit.add is None or not edit.add.strip():
+                raise ValueError("Addition requires nonempty add text")
+            index = self._match_index(edit.find, content) + 1 if edit.find else len(content)
+            content.insert(index, edit.add)
+            record = ChangeRecord(type=kind, operation="add", from_text="", to_text=edit.add,
+                                  before_index=None, after_index=index)
         elif edit.operation == "remove":
-            # Remove matching content
-            match, index, score = self.find_best_match(edit.find, modified_content)
+            index = self._match_index(edit.find, content, full_line=True)
+            original = content.pop(index)
+            record = ChangeRecord(type=kind, operation="remove", from_text=original,
+                                  to_text="", before_index=index, after_index=None)
+        else:
+            raise ValueError(f"Unknown edit operation: {edit.operation}")
+        return content, [record]
 
-            if match and index is not None:
-                removed_text = modified_content.pop(index)
-
-                change_records.append(ChangeRecord(
-                    type="ingredient" if edit.target == "ingredients" else "instruction",
-                    from_text=removed_text,
-                    to_text="",
-                    operation="remove"
-                ))
-
-                logger.info(f"Removed '{edit.find}' (similarity: {score:.2f})")
-            else:
-                logger.warning(f"Could not find '{edit.find}' to remove")
-
-        return modified_content, change_records
-
-    def apply_modification(
-        self,
-        recipe: Recipe,
-        modification: ModificationObject
-    ) -> Tuple[Recipe, List[ChangeRecord]]:
-        """
-        Apply a complete modification to a recipe.
-
-        Args:
-            recipe: Original recipe to modify
-            modification: Structured modification to apply
-
-        Returns:
-            Tuple of (modified_recipe, all_change_records)
-        """
-        logger.info(f"Applying {modification.modification_type} with {len(modification.edits)} edits")
-
-        # Deep copy the recipe
-        modified_recipe = Recipe(
-            recipe_id=f"{recipe.recipe_id}_modified",
-            title=recipe.title,
-            ingredients=copy.deepcopy(recipe.ingredients),
-            instructions=copy.deepcopy(recipe.instructions),
-            description=recipe.description,
-            servings=recipe.servings,
-            rating=recipe.rating
-        )
-
-        all_change_records = []
-
-        # Apply each edit
+    def apply_modification(self, recipe: Recipe, modification: ModificationObject) -> Tuple[Recipe, List[ChangeRecord]]:
+        """Return a complete changed copy, or raise without modifying the input."""
+        if not modification.edits:
+            raise ValueError("A modification requires at least one edit")
+        changed = recipe.model_copy(deep=True)
+        records = []
         for edit in modification.edits:
-            if edit.target == "ingredients":
-                modified_recipe.ingredients, change_records = self.apply_edit(
-                    edit, modified_recipe.ingredients
-                )
-            elif edit.target == "instructions":
-                modified_recipe.instructions, change_records = self.apply_edit(
-                    edit, modified_recipe.instructions
-                )
-            else:
-                logger.warning(f"Unknown edit target: {edit.target}")
-                continue
+            if edit.target not in ("ingredients", "instructions"):
+                raise ValueError(f"Unknown edit target: {edit.target}")
+            content, changes = self.apply_edit(edit, getattr(changed, edit.target))
+            setattr(changed, edit.target, content)
+            records.extend(changes)
+        for section in ("ingredients", "instructions"):
+            if getattr(recipe, section) and not getattr(changed, section):
+                raise ValueError(f"Modification would empty the {section} section")
+        changed.recipe_id = f"{recipe.recipe_id}_modified"
+        return changed, records
 
-            all_change_records.extend(change_records)
+    def apply_modifications_batch(self, recipe: Recipe, modifications: List[ModificationObject]) -> Tuple[Recipe, List[List[ChangeRecord]]]:
+        if not modifications:
+            raise ValueError("At least one modification is required")
+        current = recipe.model_copy(deep=True)
+        grouped = []
+        previous = []
+        for modification in modifications:
+            current, records = self.apply_modification(current, modification)
+            for record in records:
+                if any(record.type == earlier.type and
+                       record.from_text == earlier.to_text and
+                       record.to_text == earlier.from_text for earlier in previous):
+                    raise ValueError("An edit reverses an earlier change; conflicting modifications")
+                previous.append(record)
+            grouped.append(records)
+        current.recipe_id = f"{recipe.recipe_id}_modified"
+        return current, grouped
 
-        logger.info(f"Applied modification successfully: {len(all_change_records)} changes made")
-        return modified_recipe, all_change_records
-
-    def apply_modifications_batch(
-        self,
-        recipe: Recipe,
-        modifications: List[ModificationObject]
-    ) -> Tuple[Recipe, List[List[ChangeRecord]]]:
-        """
-        Apply multiple modifications to a recipe sequentially.
-
-        Args:
-            recipe: Original recipe to modify
-            modifications: List of modifications to apply
-
-        Returns:
-            Tuple of (final_modified_recipe, list_of_change_records_per_modification)
-        """
-        current_recipe = recipe
-        all_change_records = []
-
-        logger.info(f"Applying {len(modifications)} modifications sequentially")
-
-        for i, modification in enumerate(modifications):
-            logger.info(f"Applying modification {i + 1}/{len(modifications)}: {modification.modification_type}")
-
-            current_recipe, change_records = self.apply_modification(current_recipe, modification)
-            all_change_records.append(change_records)
-
-        logger.info(f"Applied all modifications. Final recipe has {len(current_recipe.ingredients)} ingredients and {len(current_recipe.instructions)} instructions")
-        return current_recipe, all_change_records
-
-    def validate_modification_safety(
-        self,
-        modification: ModificationObject,
-        recipe: Recipe
-    ) -> Tuple[bool, List[str]]:
-        """
-        Validate that a modification won't break the recipe.
-
-        Args:
-            modification: Modification to validate
-            recipe: Recipe being modified
-
-        Returns:
-            Tuple of (is_safe, list_of_warnings)
-        """
-        warnings = []
-        is_safe = True
-
-        for edit in modification.edits:
-            # Check if target content exists
-            target_content = recipe.ingredients if edit.target == "ingredients" else recipe.instructions
-            match, _, score = self.find_best_match(edit.find, target_content)
-
-            if not match:
-                warnings.append(f"Cannot find '{edit.find}' in {edit.target}")
-                is_safe = False
-            elif score < 0.8:
-                warnings.append(f"Low similarity match for '{edit.find}' (score: {score:.2f})")
-
-            # Check for required fields
-            if edit.operation == "replace" and not edit.replace:
-                warnings.append(f"Replace operation missing replacement text for '{edit.find}'")
-                is_safe = False
-            elif edit.operation == "add_after" and not edit.add:
-                warnings.append(f"Add operation missing text to add after '{edit.find}'")
-                is_safe = False
-
-        return is_safe, warnings
+    def validate_modification_safety(self, modification: ModificationObject, recipe: Recipe) -> Tuple[bool, List[str]]:
+        """Check textual applicability, not culinary or food safety."""
+        try:
+            self.apply_modification(recipe, modification)
+        except ValueError as error:
+            return False, [str(error)]
+        return True, []

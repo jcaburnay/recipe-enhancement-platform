@@ -12,6 +12,7 @@ Pipeline Steps:
 
 from .models import (
     ModificationEdit,
+    ExtractionResult,
     ModificationObject,
     EnhancedRecipe,
     ModificationApplied,
@@ -24,6 +25,7 @@ from .pipeline import LLMAnalysisPipeline
 
 __all__ = [
     "ModificationEdit",
+    "ExtractionResult",
     "ModificationObject",
     "EnhancedRecipe",
     "ModificationApplied",

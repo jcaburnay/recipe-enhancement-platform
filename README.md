@@ -1,6 +1,11 @@
 # Recipe Enhancement Platform
 
-Automatically enhances recipes by analyzing and applying community-tested modifications from AllRecipes.com. Uses LLM processing to extract meaningful recipe tweaks and apply them with full citation tracking.
+Extracts community-tested changes from AllRecipes featured reviews and applies
+verifiable textual edits with attribution and line-level differences. This is a
+correctness prototype: structured JSON alone does not establish recipe quality.
+
+See [assessment and results](docs/assessment.md) and the
+[conversation transcript](codex/conversation.md).
 
 ## Installation
 
@@ -32,7 +37,11 @@ LLM_MODEL=openrouter/free
 
 OpenRouter uses `https://openrouter.ai/api/v1` and defaults to the free model router.
 Alternatively, set `OPENAI_API_KEY` to use OpenAI (default model: `gpt-4o-mini`).
-When both keys are present, OpenRouter takes precedence. Free models are subject
+For Gemini, set `GEMINI_API_KEY`, `LLM_PROVIDER=gemini`, and
+`LLM_MODEL=gemini-3.8-flash`. It uses Google's compatible endpoint with the same
+structured-output schema. `LLM_REASONING_ENABLED=false` disables thinking for
+Gemini 2.5 Flash; Gemini 3 models use their default thinking settings. Set `LLM_PROVIDER` explicitly when keeping multiple keys;
+otherwise OpenRouter takes precedence, followed by Gemini and OpenAI. Free models are subject
 to availability and rate limits. The commands below make live API calls.
 
 Extraction uses strict JSON-schema structured outputs derived from the Pydantic
@@ -74,7 +83,16 @@ of the working directory:
 
 ### Data Structure
 
-Original scraped recipes in `data/` directory contain reviews with `has_modification: true` flags. Enhanced recipes include:
+Original scraped recipes contain `featured_tweaks` and reviews with heuristic
+`has_modification` flags. Selection uses featured designation rather than those
+flags. Helpful votes rank reviews when supplied; the sample dataset has none, so
+featured order is preserved. Star ratings are not treated as vote counts.
+
+Output schema v2 includes one `modifications_applied` entry per discrete change,
+with an exact `evidence_quote`, source review, and its associated edits. `line_diffs`
+contains original-to-final line indexes; change-record indexes within each
+modification refer to the intermediate edit state. Existing v1 sample files remain
+historical examples until regenerated. Enhanced recipes include:
 
 ```json
 {
@@ -104,11 +122,17 @@ Original scraped recipes in `data/` directory contain reviews with `has_modifica
 
 The LLM Analysis Pipeline processes recipes in 3 steps:
 
-1. **Tweak Extraction**: Selects one random review with modifications and uses the configured LLM to extract structured changes
-2. **Recipe Modification**: Applies changes to the original recipe using fuzzy string matching
-3. **Enhanced Recipe Generation**: Creates enhanced version with full citation tracking back to source review
+1. **Tweak Extraction**: Selects one featured review deterministically and extracts all discrete performed ingredient changes with necessary instruction updates. Ambiguous ingredient changes remain `unresolved`; technique-only changes are recorded in `excluded_changes` and do not block publication.
+2. **Recipe Modification**: Applies exact unique edits transactionally. Missing, ambiguous, or unchanged replacements fail rather than silently creating partial results.
+3. **Enhanced Recipe Generation**: Saves only fully applied, actionable results with per-modification attribution and original-to-final line differences.
 
-Each run produces one enhanced recipe per original recipe, with complete attribution showing exactly what changed and why.
+Missing featured reviews and reviews without actual changes are skipped. Unresolved
+changes, extraction errors, or unapplicable edits fail without writing a new output.
+An existing output is not deleted when a later run fails; check the current run's
+report and output timestamp. Batch reports distinguish successes, skips, and failures;
+the `all` command exits unsuccessfully if any input fails. Reviews are not combined,
+avoiding conflicting advice; arbitrary cooking or ingredient consistency is not
+guaranteed and must be evaluated independently.
 
 ## Development
 
@@ -121,4 +145,18 @@ uv run python -m unittest discover -s tests -q
 
 # Run live single-recipe validation
 uv run python src/test_pipeline.py single
+
 ```
+
+Named additions and extra amounts may be retained as `(amount unspecified)` when
+their application is clear; no quantity is invented. Unknown substitutions or unclear
+application remain unresolved. Extraction dry-runs edits on a copy and sends validation
+errors back to the model on retry. These checks verify edit applicability, not semantic
+accuracy; inspect generated changes against source reviews.
+
+Each applied modification retains `intent` with ingredient identity, amount,
+review-supported application and explicit uncertainties. Null application on an
+addition prevents invented instruction edits. Statement classifications distinguish
+performed changes from ignored future plans, hypothetical suggestions and compliments.
+Ingredient-only additions with unknown application are partial recipe guidance;
+inspect their uncertainties before cooking. Legacy records may omit intent metadata.

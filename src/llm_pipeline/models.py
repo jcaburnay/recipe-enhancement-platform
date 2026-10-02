@@ -31,6 +31,25 @@ class ModificationEdit(BaseModel):
     )
 
 
+class IngredientIntent(BaseModel):
+    """Evidence-grounded ingredient details, independent of textual edits."""
+
+    model_config = ConfigDict(extra="forbid")
+    ingredient: str = Field(description="One ingredient identity, not a combined list")
+    amount: Optional[str] = Field(description="Explicit or calculated amount; singular an egg means 1 egg; null when unspecified")
+    application: Optional[str] = Field(description="How/when used, only when supported by review; null when unknown")
+    application_evidence: Optional[str] = Field(description="Exact review excerpt supporting application, or null")
+    uncertainties: List[str] = Field(description="Missing amount/application details retained visibly without guessing")
+
+
+class ReviewStatement(BaseModel):
+    """Classification of a review excerpt before edit generation."""
+
+    model_config = ConfigDict(extra="forbid")
+    evidence_quote: str
+    classification: Literal["performed_change", "future_plan", "hypothetical_suggestion", "compliment"]
+
+
 class ModificationObject(BaseModel):
     """Structured modification parsed from a review."""
 
@@ -39,14 +58,25 @@ class ModificationObject(BaseModel):
     modification_type: Literal[
         "ingredient_substitution",
         "quantity_adjustment",
-        "technique_change",
         "addition",
         "removal",
     ] = Field(description="Category of modification")
 
     reasoning: str = Field(description="Why this modification improves the recipe")
+    evidence_quote: str = Field(default="", description="Exact review excerpt supporting this discrete modification")
 
+    intent: Optional[IngredientIntent] = Field(default=None, description="Populate for every ingredient modification; null only for legacy data")
     edits: List[ModificationEdit] = Field(description="List of atomic edits to apply")
+
+
+class ExtractionResult(BaseModel):
+    """All actionable changes from one review, plus changes needing clarification."""
+
+    model_config = ConfigDict(extra="forbid")
+    statements: List[ReviewStatement] = Field(default_factory=list, description="Classify relevant performed changes, future plans, suggestions and compliments before proposing edits")
+    modifications: List[ModificationObject]
+    excluded_changes: List[str] = Field(default_factory=list, description="Performed technique-only changes outside ingredient scope; include exact review evidence and explain exclusion")
+    unresolved: List[str] = Field(description="Actual changes that cannot be applied without inventing details; explain why")
 
 
 class SourceReview(BaseModel):
@@ -55,6 +85,8 @@ class SourceReview(BaseModel):
     text: str = Field(description="Full text of the original review")
     reviewer: Optional[str] = Field(description="Username of the reviewer")
     rating: Optional[int] = Field(description="Star rating given by reviewer")
+    is_featured: bool = False
+    helpful_votes: Optional[int] = None
 
 
 class ChangeRecord(BaseModel):
@@ -68,6 +100,8 @@ class ChangeRecord(BaseModel):
     operation: Literal["replace", "add", "remove"] = Field(
         description="Type of operation performed"
     )
+    before_index: Optional[int] = Field(default=None, description="Zero-based line index immediately before this edit")
+    after_index: Optional[int] = Field(default=None, description="Zero-based line index immediately after this edit")
 
 
 class ModificationApplied(BaseModel):
@@ -78,6 +112,8 @@ class ModificationApplied(BaseModel):
     )
     modification_type: str = Field(description="Category of modification")
     reasoning: str = Field(description="Why this modification was applied")
+    evidence_quote: str = ""
+    intent: Optional[IngredientIntent] = None
     changes_made: List[ChangeRecord] = Field(
         description="Detailed list of changes made"
     )
@@ -105,12 +141,15 @@ class EnhancedRecipe(BaseModel):
     instructions: List[str] = Field(description="Modified instructions list")
 
     # Attribution and tracking
+    statements: List[ReviewStatement] = Field(default_factory=list, description="Source statement classifications, including ignored plans and suggestions")
     modifications_applied: List[ModificationApplied] = Field(
         description="Full record of all modifications applied"
     )
     enhancement_summary: EnhancementSummary = Field(
         description="Summary of all enhancements"
     )
+    excluded_changes: List[str] = Field(default_factory=list, description="Review changes excluded from ingredient-only scope")
+    line_diffs: List[ChangeRecord] = Field(default_factory=list, description="Original-to-final line differences; indexes refer to the original and final lists")
 
     # Optional metadata
     description: Optional[str] = Field(description="Enhanced recipe description")
@@ -146,3 +185,5 @@ class Review(BaseModel):
     rating: Optional[int] = None
     username: Optional[str] = None
     has_modification: bool = False
+    is_featured: bool = False
+    helpful_votes: Optional[int] = None

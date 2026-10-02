@@ -26,8 +26,8 @@ def test_single_recipe():
     """Test the pipeline with the chocolate chip cookie recipe."""
 
     # Check for OpenAI API key
-    if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")):
-        logger.error("OPENROUTER_API_KEY or OPENAI_API_KEY environment variable not set")
+    if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        logger.error("Set OPENROUTER_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY")
         logger.info("Please set your provider API key in .env file")
         return False
 
@@ -76,8 +76,8 @@ def test_all_recipes():
     """Test the pipeline with all scraped recipes."""
 
     # Check for OpenAI API key
-    if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")):
-        logger.error("OPENROUTER_API_KEY or OPENAI_API_KEY environment variable not set")
+    if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        logger.error("Set OPENROUTER_API_KEY, GEMINI_API_KEY, or OPENAI_API_KEY")
         logger.info("Please set your provider API key in .env file")
         return False
 
@@ -97,11 +97,16 @@ def test_all_recipes():
         report_path = pipeline.save_summary_report(enhanced_recipes)
 
         logger.info(f"\n{'=' * 60}")
-        logger.success("✓ All recipes test complete!")
+        logger.info("All recipes processing complete")
         logger.info(f"Enhanced recipes: {len(enhanced_recipes)}")
+        logger.info("Skipped: {}; failed: {}",
+                    sum(result["status"] == "skipped" for result in pipeline.processing_results),
+                    sum(result["status"] == "failed" for result in pipeline.processing_results))
         logger.info(f"Summary report saved to: {report_path}")
 
-        return len(enhanced_recipes) > 0
+        return len(enhanced_recipes) > 0 and not any(
+            result["status"] == "failed" for result in pipeline.processing_results
+        )
 
     except Exception as e:
         logger.error(f"All recipes test failed with error: {e}")
