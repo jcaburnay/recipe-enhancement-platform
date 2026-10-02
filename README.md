@@ -15,9 +15,7 @@ This project uses [`uv`](https://docs.astral.sh/uv/) for fast, reliable Python p
 
 ```bash
 # Install dependencies
-uv venv
-source .venv/bin/activate
-uv pip sync pyproject.toml
+uv sync --locked
 ```
 
 ### Environment Variables
@@ -25,8 +23,26 @@ uv pip sync pyproject.toml
 Create a `.env` file in the project root:
 
 ```env
-OPENAI_API_KEY=your-openai-api-key-here
+OPENROUTER_API_KEY=your-openrouter-api-key-here
+# Optional: choose a specific model instead of the free router
+LLM_MODEL=openrouter/free
+# For models with optional reasoning, disable it for this extraction task:
+# LLM_REASONING_ENABLED=false
 ```
+
+OpenRouter uses `https://openrouter.ai/api/v1` and defaults to the free model router.
+Alternatively, set `OPENAI_API_KEY` to use OpenAI (default model: `gpt-4o-mini`).
+When both keys are present, OpenRouter takes precedence. Free models are subject
+to availability and rate limits. The commands below make live API calls.
+
+Extraction uses strict JSON-schema structured outputs derived from the Pydantic
+models, with a 4,096-token output budget. Choose a model that supports structured
+outputs; OpenRouter routing requires compatible endpoints. Responses are still
+validated locally, and truncated responses are discarded before parsing.
+Token usage is logged without reasoning text. Token-limit failures stop immediately
+instead of repeating the same request. `LLM_REASONING_ENABLED=false` is supported
+only by endpoints where reasoning is optional; leave it unset for mandatory
+reasoning models.
 
 ## Usage
 
@@ -39,20 +55,19 @@ uv run python src/scraper_v2.py
 ### 2. Run Recipe Enhancement Pipeline
 
 ```bash
-cd src
-
 # Test single recipe (chocolate chip cookies)
-uv run python test_pipeline.py single
+uv run python src/test_pipeline.py single
 
 # Process all recipes
-uv run python test_pipeline.py all
+uv run python src/test_pipeline.py all
 ```
 
 ## Output
 
 ### Enhanced Recipes
 
-Enhanced recipes are saved in `src/data/enhanced/`:
+Enhanced recipes are saved in the repository root's `data/enhanced/`, regardless
+of the working directory:
 
 - `enhanced_[recipe_id]_[recipe-name].json` - Individual enhanced recipes with modifications applied
 - `pipeline_summary_report.json` - Summary of all processing results
@@ -89,7 +104,7 @@ Original scraped recipes in `data/` directory contain reviews with `has_modifica
 
 The LLM Analysis Pipeline processes recipes in 3 steps:
 
-1. **Tweak Extraction**: Selects one random review with modifications and uses GPT-4o-mini to extract structured changes
+1. **Tweak Extraction**: Selects one random review with modifications and uses the configured LLM to extract structured changes
 2. **Recipe Modification**: Applies changes to the original recipe using fuzzy string matching
 3. **Enhanced Recipe Generation**: Creates enhanced version with full citation tracking back to source review
 
@@ -102,5 +117,8 @@ Each run produces one enhanced recipe per original recipe, with complete attribu
 uv add <package_name>
 
 # Run tests
-cd src && uv run python test_pipeline.py single
+uv run python -m unittest discover -s tests -q
+
+# Run live single-recipe validation
+uv run python src/test_pipeline.py single
 ```

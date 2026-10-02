@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-from llm_pipeline.pipeline import LLMAnalysisPipeline
+from llm_pipeline.pipeline import DATA_DIR, LLMAnalysisPipeline
 from loguru import logger
 
 # Load environment variables from .env file
@@ -26,9 +26,9 @@ def test_single_recipe():
     """Test the pipeline with the chocolate chip cookie recipe."""
 
     # Check for OpenAI API key
-    if not os.getenv("OPENAI_API_KEY"):
-        logger.error("OPENAI_API_KEY environment variable not set")
-        logger.info("Please set your OpenAI API key in .env file")
+    if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        logger.error("OPENROUTER_API_KEY or OPENAI_API_KEY environment variable not set")
+        logger.info("Please set your provider API key in .env file")
         return False
 
     # Initialize pipeline
@@ -40,7 +40,7 @@ def test_single_recipe():
         return False
 
     # Test with chocolate chip cookie recipe
-    recipe_file = "../data/recipe_10813_best-chocolate-chip-cookies.json"
+    recipe_file = str(DATA_DIR / "recipe_10813_best-chocolate-chip-cookies.json")
     if not Path(recipe_file).exists():
         logger.error(f"Recipe file not found: {recipe_file}")
         return False
@@ -76,9 +76,9 @@ def test_all_recipes():
     """Test the pipeline with all scraped recipes."""
 
     # Check for OpenAI API key
-    if not os.getenv("OPENAI_API_KEY"):
-        logger.error("OPENAI_API_KEY environment variable not set")
-        logger.info("Please set your OpenAI API key in .env file")
+    if not (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        logger.error("OPENROUTER_API_KEY or OPENAI_API_KEY environment variable not set")
+        logger.info("Please set your provider API key in .env file")
         return False
 
     # Initialize pipeline
@@ -91,9 +91,7 @@ def test_all_recipes():
 
     try:
         # Process all recipes
-        enhanced_recipes = pipeline.process_recipe_directory(
-            data_dir="../data"
-        )
+        enhanced_recipes = pipeline.process_recipe_directory()
 
         # Generate summary report
         report_path = pipeline.save_summary_report(enhanced_recipes)
@@ -132,7 +130,7 @@ def main():
         logger.info("=" * 60)
         if success:
             logger.success("Single recipe test passed! ✓")
-            logger.info("Check the 'data/enhanced/' directory for the enhanced recipe.")
+            logger.info(f"Check '{DATA_DIR / 'enhanced'}' for the enhanced recipe.")
         else:
             logger.error("Single recipe test failed! ✗")
             sys.exit(1)
@@ -145,8 +143,8 @@ def main():
         logger.info("=" * 60)
         if success:
             logger.success("All recipes validation passed! ✓")
-            logger.info("Check the 'data/enhanced/' directory for all enhanced recipes.")
-            logger.info("Check 'data/enhanced/pipeline_summary_report.json' for detailed results.")
+            logger.info(f"Check '{DATA_DIR / 'enhanced'}' for all enhanced recipes.")
+            logger.info(f"Check '{DATA_DIR / 'enhanced' / 'pipeline_summary_report.json'}' for detailed results.")
         else:
             logger.error("All recipes validation failed! ✗")
             sys.exit(1)

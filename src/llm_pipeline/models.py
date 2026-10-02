@@ -7,11 +7,13 @@ and all intermediate data formats used throughout the pipeline.
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModificationEdit(BaseModel):
     """Individual atomic edit operation for a recipe modification."""
+
+    model_config = ConfigDict(extra="forbid")
 
     target: Literal["ingredients", "instructions"] = Field(
         description="Whether this edit applies to ingredients or instructions"
@@ -31,6 +33,8 @@ class ModificationEdit(BaseModel):
 
 class ModificationObject(BaseModel):
     """Structured modification parsed from a review."""
+
+    model_config = ConfigDict(extra="forbid")
 
     modification_type: Literal[
         "ingredient_substitution",

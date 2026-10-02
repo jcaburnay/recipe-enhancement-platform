@@ -21,6 +21,8 @@ from .models import EnhancedRecipe, Recipe, Review
 from .recipe_modifier import RecipeModifier
 from .tweak_extractor import TweakExtractor
 
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
 
 class LLMAnalysisPipeline:
     """Complete pipeline for analyzing recipes and generating enhanced versions."""
@@ -28,7 +30,7 @@ class LLMAnalysisPipeline:
     def __init__(
         self,
         openai_api_key: Optional[str] = None,
-        output_dir: str = "data/enhanced",
+        output_dir: Optional[str] = None,
         pipeline_version: str = "1.0.0",
     ):
         """
@@ -36,13 +38,13 @@ class LLMAnalysisPipeline:
 
         Args:
             openai_api_key: OpenAI API key (loads from env if not provided)
-            output_dir: Directory to save enhanced recipes
+            output_dir: Directory to save enhanced recipes (defaults to repository data/enhanced)
             pipeline_version: Version identifier for tracking
         """
         # Load environment variables
         load_dotenv()
 
-        self.output_dir = Path(output_dir)
+        self.output_dir = Path(output_dir) if output_dir is not None else DATA_DIR / "enhanced"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize pipeline components
@@ -193,7 +195,7 @@ class LLMAnalysisPipeline:
             traceback.print_exc()
             return None
 
-    def process_recipe_directory(self, data_dir: str = "data") -> List[EnhancedRecipe]:
+    def process_recipe_directory(self, data_dir: Optional[str] = None) -> List[EnhancedRecipe]:
         """
         Process all recipe files in a directory.
 
@@ -203,7 +205,7 @@ class LLMAnalysisPipeline:
         Returns:
             List of successfully processed EnhancedRecipe objects
         """
-        data_path = Path(data_dir)
+        data_path = Path(data_dir) if data_dir is not None else DATA_DIR
         recipe_files = list(data_path.glob("recipe_*.json"))
 
         logger.info(f"Found {len(recipe_files)} recipe files to process")

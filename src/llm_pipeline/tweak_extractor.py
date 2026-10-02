@@ -11,27 +11,66 @@ import os
 from typing import Optional
 
 from loguru import logger
-from openai import OpenAI
+from openai import BadRequestError, NotFoundError, OpenAI
 from pydantic import ValidationError
 
 from .models import ModificationObject, Recipe, Review
 from .prompts import build_simple_prompt
 
 
+def build_modification_response_format() -> dict:
+    """Derive a strict provider schema while preserving local model defaults."""
+    schema = ModificationObject.model_json_schema()
+
+    def make_strict(node):
+        if isinstance(node, dict):
+            node.pop("default", None)
+            if node.get("type") == "object":
+                node["additionalProperties"] = False
+                node["required"] = list(node.get("properties", {}))
+            for value in node.values():
+                make_strict(value)
+        elif isinstance(node, list):
+            for value in node:
+                make_strict(value)
+
+    make_strict(schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "recipe_modification", "strict": True, "schema": schema},
+    }
+
+
 class TweakExtractor:
     """Extracts structured modifications from review text using LLM processing."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         """
         Initialize the TweakExtractor.
 
         Args:
-            api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
-            model: OpenAI model to use for extraction
+            api_key: Provider API key (defaults to environment configuration)
+            model: Model to use for extraction (defaults to LLM_MODEL or provider default)
         """
-        self.client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
-        self.model = model
-        logger.info(f"Initialized TweakExtractor with model: {model}")
+        use_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
+        self.use_openrouter = use_openrouter
+        reasoning_enabled = os.getenv("LLM_REASONING_ENABLED")
+        self.reasoning_enabled = None
+        if reasoning_enabled is not None:
+            if reasoning_enabled.lower() not in ("true", "false"):
+                raise ValueError("LLM_REASONING_ENABLED must be true or false")
+            self.reasoning_enabled = reasoning_enabled.lower() == "true"
+        provider_key = os.getenv("OPENROUTER_API_KEY" if use_openrouter else "OPENAI_API_KEY")
+        self.client = OpenAI(
+            api_key=api_key or provider_key,
+            base_url="https://openrouter.ai/api/v1" if use_openrouter else None,
+            timeout=60.0,
+            max_retries=0,  # Extraction below already handles retries.
+        )
+        self.model = model or os.getenv("LLM_MODEL") or (
+            "openrouter/free" if use_openrouter else "gpt-4o-mini"
+        )
+        logger.info(f"Initialized TweakExtractor with model: {self.model}")
 
     def extract_modification(
         self,
@@ -58,6 +97,12 @@ class TweakExtractor:
         prompt = build_simple_prompt(
             review.text, recipe.title, recipe.ingredients, recipe.instructions
         )
+        prompt += (
+            "\nReturn one modification object, without a modifications wrapper. "
+            "Combine this review's edits into its edits list and choose the main "
+            "modification_type. Include both replace and add on every edit, using "
+            "null for fields that do not apply."
+        )
 
         logger.debug(
             "Extracting modification from review: {}...".format(review.text[:100])
@@ -68,17 +113,44 @@ class TweakExtractor:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"},
+                    response_format=build_modification_response_format(),
                     temperature=0.1,  # Low temperature for consistent extractions
-                    max_tokens=1000,
+                    max_tokens=4096,
+                    **({"extra_body": {
+                        "provider": {"require_parameters": True},
+                        **({"reasoning": {"enabled": self.reasoning_enabled}}
+                           if self.reasoning_enabled is not None else {}),
+                    }}
+                       if self.use_openrouter else {}),
                 )
 
-                raw_output = response.choices[0].message.content
+                choice = response.choices[0]
+                usage = getattr(response, "usage", None)
+                if usage is not None:
+                    details = getattr(usage, "completion_tokens_details", None)
+                    logger.info(
+                        "Token usage: prompt={}, completion={}, reasoning={}",
+                        usage.prompt_tokens, usage.completion_tokens,
+                        getattr(details, "reasoning_tokens", None),
+                    )
+                if choice.finish_reason == "length":
+                    logger.warning(
+                        "Output token limit reached; discarding truncated response. "
+                        "Adjust reasoning or the output budget before retrying."
+                    )
+                    return None
+                if choice.message.refusal:
+                    logger.warning("Model refused recipe modification extraction")
+                    return None
+                raw_output = choice.message.content
                 logger.debug(f"LLM raw output: {raw_output}")
 
                 # Check if we got a response
                 if not raw_output:
-                    logger.warning(f"Attempt {attempt + 1}: Empty response from LLM")
+                    logger.warning(
+                        f"Attempt {attempt + 1}: Empty response from LLM "
+                        f"(finish reason: {response.choices[0].finish_reason})"
+                    )
                     continue
 
                 # Parse and validate the JSON response
@@ -90,6 +162,13 @@ class TweakExtractor:
                     f"modification with {len(modification.edits)} edits"
                 )
                 return modification
+
+            except (BadRequestError, NotFoundError) as e:
+                logger.error(
+                    f"Structured-output request rejected: {e}. "
+                    "Check the schema and select a model/provider supporting json_schema."
+                )
+                return None
 
             except json.JSONDecodeError as e:
                 logger.warning(f"Attempt {attempt + 1}: Failed to parse JSON: {e}")
